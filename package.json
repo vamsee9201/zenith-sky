@@ -1,0 +1,41 @@
+{
+  "name": "zenith-sky",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "astronomy-engine": "latest",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "satellite.js": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "latest",
+    "@testing-library/user-event": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "eslint": "latest",
+    "eslint-config-next": "^16.0.0",
+    "jsdom": "^26.1.0",
+    "typescript": "latest",
+    "vitest": "^3.2.4"
+  }
+}
