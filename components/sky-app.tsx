@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { objectsOverhead } from "@/lib/orbit";
 import { dossierSchema } from "@/lib/dossier-schema";
+import { SkyDome } from "@/components/sky-dome";
 import type {
   CatalogObject,
   CatalogResponse,
@@ -260,6 +261,7 @@ export function SkyApp() {
           </div>
           {catalogError && <div className="empty-state error-state" role="alert"><strong>Catalog unavailable</strong><p>{catalogError}</p></div>}
           {!catalog && !catalogError && <div className="loading-list" aria-label="Loading satellite catalog"><span /><span /><span /></div>}
+          {catalog && <SkyDome overhead={overhead} />}
           {catalog && overhead.length === 0 && <div className="empty-state"><strong>No bright objects above your horizon right now.</strong><p>The sky changes quickly—check Tonight for the next visible pass.</p></div>}
           {overhead.length > 0 && (
             <ol className="object-list">
@@ -298,7 +300,7 @@ export function SkyApp() {
           )}
           {passState.status === "error" && <div className="empty-state error-state" role="alert"><strong>Pass calculation failed</strong><p>{passState.message}</p></div>}
           {passState.status === "ready" && passState.passes.length === 0 && <div className="empty-state"><strong>No qualifying pass in the next 24 hours.</strong><p>Try a different observer location or check again after the catalog refreshes.</p></div>}
-          {passState.status === "ready" && passState.passes.length > 0 && <PassList passes={passState.passes} />}
+          {passState.status === "ready" && passState.passes.length > 0 && <><SkyDome passes={passState.passes} /><PassList passes={passState.passes} /></>}
           <footer className="pass-note">These objects belong to the bright visual catalog. Actual brightness varies with distance, attitude, atmosphere, and surroundings.</footer>
         </section>
       )}

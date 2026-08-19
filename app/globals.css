@@ -33,6 +33,16 @@ button,input { font:inherit; } button { color:inherit; }
 .panel-heading { padding:1.3rem 1.3rem 1rem; align-items:flex-end; }
 .panel-heading h2,.tonight-placeholder h2 { margin:0; font-size:1.17rem; letter-spacing:-.02em; }
 .panel-heading time { color:var(--faint); font-size:.73rem; font-variant-numeric:tabular-nums; }
+.sky-dome { margin:0; padding:.6rem 1.3rem 1.1rem; border-top:1px solid var(--line); background:radial-gradient(circle at 50% 45%,rgba(104,225,255,.055),transparent 58%); text-align:center; }
+.sky-dome svg { display:block; width:min(100%,21rem); margin:0 auto; overflow:visible; }
+.dome-horizon { fill:rgba(1,7,13,.34); stroke:rgba(104,225,255,.42); stroke-width:1.5; }
+.dome-grid,.dome-axis { fill:none; stroke:rgba(147,167,193,.15); stroke-width:1; }
+.dome-cardinal { fill:var(--muted); font-size:10px; font-weight:800; text-anchor:middle; }.dome-cardinal.north { fill:var(--accent); }
+.dome-elevation { fill:var(--faint); font-size:7px; }
+.dome-track { fill:none; stroke:var(--accent); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.dome-object { fill:var(--accent-2); stroke:rgba(181,255,207,.25); stroke-width:5; paint-order:stroke; }
+.dome-zenith { fill:var(--accent); }
+.sky-dome figcaption { margin-top:-.25rem; color:var(--faint); font-size:.65rem; }
 .object-list { list-style:none; margin:0; padding:0; }
 .object-list li { border-top:1px solid var(--line); }
 .object-button { width:100%; min-height:4.9rem; display:flex; align-items:center; gap:1rem; border:0; background:transparent; padding:.85rem 1.3rem; text-align:left; cursor:pointer; }
