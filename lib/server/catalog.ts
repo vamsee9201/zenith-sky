@@ -3,6 +3,7 @@ import "server-only";
 import { joinCatalog } from "@/lib/catalog-normalize";
 import { rawOmmArraySchema, rawSatcatArraySchema, type RawOmm, type RawSatcat } from "@/lib/schemas";
 import type { CatalogResponse } from "@/lib/types";
+import seedJson from "@/data/celestrak-seed.json";
 
 const GP_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=JSON";
 const SATCAT_URL = "https://celestrak.org/satcat/records.php?GROUP=visual&FORMAT=JSON";
@@ -13,6 +14,8 @@ const REQUEST_SPACING_MS = 1_050;
 interface CacheEntry<T> {
   data: T;
   fetchedAt: number;
+  sourceUpdatedAt?: number;
+  fallback?: boolean;
 }
 
 let gpCache: CacheEntry<RawOmm[]> | null = null;
@@ -24,6 +27,15 @@ let pacingQueue: Promise<void> = Promise.resolve();
 
 type FetchLike = typeof fetch;
 type Sleep = (milliseconds: number) => Promise<void>;
+
+const parsedSeed = (() => {
+  const seed = seedJson as { fetchedAt: string; omm: unknown; satcat: unknown };
+  return {
+    fetchedAt: new Date(seed.fetchedAt).getTime(),
+    omm: rawOmmArraySchema.parse(seed.omm),
+    satcat: rawSatcatArraySchema.parse(seed.satcat),
+  };
+})();
 
 function defaultSleep(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -65,7 +77,9 @@ async function refreshSatcat(fetcher: FetchLike, sleep: Sleep): Promise<CacheEnt
 }
 
 async function loadGp(now: number, fetcher: FetchLike, sleep: Sleep) {
-  if (gpCache && now - gpCache.fetchedAt < GP_TTL_MS) return { entry: gpCache, stale: false };
+  if (gpCache && now - gpCache.fetchedAt < GP_TTL_MS) {
+    return { entry: gpCache, stale: Boolean(gpCache.fallback) };
+  }
   gpRefresh ??= refreshGp(fetcher, sleep).finally(() => {
     gpRefresh = null;
   });
@@ -80,7 +94,7 @@ async function loadGp(now: number, fetcher: FetchLike, sleep: Sleep) {
 
 async function loadSatcat(now: number, fetcher: FetchLike, sleep: Sleep) {
   if (satcatCache && now - satcatCache.fetchedAt < SATCAT_TTL_MS) {
-    return { entry: satcatCache, stale: false };
+    return { entry: satcatCache, stale: Boolean(satcatCache.fallback) };
   }
   satcatRefresh ??= refreshSatcat(fetcher, sleep).finally(() => {
     satcatRefresh = null;
@@ -98,17 +112,43 @@ export async function getCatalog(options: {
   now?: number;
   fetcher?: FetchLike;
   sleep?: Sleep;
+  useSeedFallback?: boolean;
 } = {}): Promise<CatalogResponse> {
   const now = options.now ?? Date.now();
   const fetcher = options.fetcher ?? fetch;
   const sleep = options.sleep ?? defaultSleep;
-  const [gp, satcat] = await Promise.all([
-    loadGp(now, fetcher, sleep),
-    loadSatcat(now, fetcher, sleep),
-  ]);
+  let gp;
+  let satcat;
+  try {
+    [gp, satcat] = await Promise.all([
+      loadGp(now, fetcher, sleep),
+      loadSatcat(now, fetcher, sleep),
+    ]);
+  } catch (error) {
+    if (options.useSeedFallback === false) throw error;
+    gpCache ??= {
+      data: parsedSeed.omm,
+      fetchedAt: now,
+      sourceUpdatedAt: parsedSeed.fetchedAt,
+      fallback: true,
+    };
+    satcatCache ??= {
+      data: parsedSeed.satcat,
+      fetchedAt: now,
+      sourceUpdatedAt: parsedSeed.fetchedAt,
+      fallback: true,
+    };
+    gp = { entry: gpCache, stale: true };
+    satcat = { entry: satcatCache, stale: true };
+  }
 
   return {
-    updatedAt: new Date(Math.min(gp.entry.fetchedAt, satcat.entry.fetchedAt)).toISOString(),
+    updatedAt: new Date(
+      Math.min(
+        gp.entry.sourceUpdatedAt ?? gp.entry.fetchedAt,
+        satcat.entry.sourceUpdatedAt ?? satcat.entry.fetchedAt,
+      ),
+    ).toISOString(),
     stale: gp.stale || satcat.stale,
     objects: joinCatalog(gp.entry.data, satcat.entry.data),
   };
@@ -122,4 +162,3 @@ export function resetCatalogCacheForTests() {
   lastUpstreamRequestAt = 0;
   pacingQueue = Promise.resolve();
 }
-

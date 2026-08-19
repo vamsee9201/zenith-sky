@@ -55,7 +55,19 @@ describe("CelesTrak catalog cache", () => {
       .mockResolvedValueOnce(jsonResponse([{ OBJECT_NAME: "broken" }]))
       .mockResolvedValueOnce(jsonResponse([rawSatcatFixture]));
 
-    await expect(getCatalog({ fetcher, sleep: async () => undefined })).rejects.toThrow();
+    await expect(
+      getCatalog({ fetcher, sleep: async () => undefined, useSeedFallback: false }),
+    ).rejects.toThrow();
+  });
+
+  it("boots from the tracked snapshot when Cloud Run egress is blocked", async () => {
+    const failedFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error("connect timeout"));
+    const first = await getCatalog({ fetcher: failedFetch, sleep: async () => undefined });
+    const second = await getCatalog({ fetcher: failedFetch, sleep: async () => undefined });
+
+    expect(first.stale).toBe(true);
+    expect(first.objects.length).toBeGreaterThan(100);
+    expect(second.stale).toBe(true);
+    expect(second.objects).toEqual(first.objects);
   });
 });
-
