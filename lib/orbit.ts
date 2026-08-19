@@ -52,8 +52,8 @@ export function azimuthToCompass(azimuthDegrees: number): string {
 export function lookAnglesForObject(object: CatalogObject, observer: Observer, date: Date) {
   validateObserver(observer);
   const satrec = json2satrec(toSatelliteOmm(object));
-  const state = propagate(satrec, date, { communityDecayCheckEnabled: true });
-  if (!state) return null;
+  const state = propagate(satrec, date);
+  if (!state || typeof state.position === "boolean" || typeof state.velocity === "boolean") return null;
 
   const gmst = gstime(date);
   const positionEcf = eciToEcf(state.position, gmst);
@@ -103,4 +103,3 @@ export function objectsOverhead(objects: CatalogObject[], observer: Observer, da
     .filter((snapshot): snapshot is OverheadSnapshot => snapshot !== null)
     .sort((a, b) => b.elevationDegrees - a.elevationDegrees);
 }
-

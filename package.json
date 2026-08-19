@@ -22,7 +22,7 @@
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "satellite.js": "latest",
+    "satellite.js": "^6.0.1",
     "zod": "latest"
   },
   "devDependencies": {
