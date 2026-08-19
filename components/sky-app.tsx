@@ -2,11 +2,16 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { objectsOverhead } from "@/lib/orbit";
-import type { CatalogResponse, Observer } from "@/lib/types";
+import { dossierSchema } from "@/lib/dossier-schema";
+import type { CatalogObject, CatalogResponse, Dossier, Observer } from "@/lib/types";
 
 const LOS_ANGELES: Observer = { latitude: 34.0522, longitude: -118.2437 };
 const LOCATION_STORAGE_KEY = "zenith-observer-v1";
 type Tab = "overhead" | "tonight";
+type DossierState =
+  | { status: "loading" }
+  | { status: "ready"; data: Dossier }
+  | { status: "error"; message: string };
 
 function formatUpdatedAt(value: string | null) {
   if (!value) return "Waiting for catalog";
@@ -26,6 +31,8 @@ export function SkyApp() {
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [activeTab, setActiveTab] = useState<Tab>("overhead");
+  const [expandedNoradId, setExpandedNoradId] = useState<string | null>(null);
+  const [dossiers, setDossiers] = useState<Record<string, DossierState>>({});
 
   useEffect(() => {
     const stored = window.localStorage.getItem(LOCATION_STORAGE_KEY);
@@ -128,6 +135,54 @@ export function SkyApp() {
     setLocationMessage("Manual location saved on this device.");
   }
 
+  async function loadDossier(noradId: string, force = false) {
+    setExpandedNoradId((current) => current === noradId && !force ? null : noradId);
+    if (!force && dossiers[noradId]) return;
+
+    const storageKey = `zenith-dossier-${noradId}`;
+    if (!force) {
+      try {
+        const saved = window.localStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = dossierSchema.safeParse(JSON.parse(saved));
+          if (parsed.success) {
+            setDossiers((current) => ({ ...current, [noradId]: { status: "ready", data: parsed.data } }));
+            return;
+          }
+          window.localStorage.removeItem(storageKey);
+        }
+      } catch {
+        window.localStorage.removeItem(storageKey);
+      }
+    }
+
+    setDossiers((current) => ({ ...current, [noradId]: { status: "loading" } }));
+    try {
+      const response = await fetch("/api/dossier", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ noradId }),
+      });
+      const body = (await response.json()) as unknown;
+      const parsed = dossierSchema.safeParse(body);
+      if (!response.ok || !parsed.success) throw new Error("The object brief is temporarily unavailable.");
+      window.localStorage.setItem(storageKey, JSON.stringify(parsed.data));
+      setDossiers((current) => ({ ...current, [noradId]: { status: "ready", data: parsed.data } }));
+    } catch (error) {
+      setDossiers((current) => ({
+        ...current,
+        [noradId]: {
+          status: "error",
+          message: error instanceof Error ? error.message : "The object brief is temporarily unavailable.",
+        },
+      }));
+    }
+  }
+
+  function catalogObject(noradId: string): CatalogObject | undefined {
+    return catalog?.objects.find((object) => object.noradId === noradId);
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -175,9 +230,23 @@ export function SkyApp() {
             <ol className="object-list">
               {overhead.map((object) => (
                 <li key={object.noradId}>
-                  <div className="object-rank" aria-hidden="true">{Math.round(object.elevationDegrees)}°</div>
-                  <div className="object-main"><strong>{object.objectName}</strong><span>NORAD {object.noradId} · {Math.round(object.rangeKm).toLocaleString()} km</span></div>
-                  <div className="object-direction"><strong>{object.azimuthCompass}</strong><span>{Math.round(object.azimuthDegrees)}° · {object.motion}</span></div>
+                  <button
+                    className="object-button"
+                    type="button"
+                    aria-expanded={expandedNoradId === object.noradId}
+                    onClick={() => void loadDossier(object.noradId)}
+                  >
+                    <div className="object-rank" aria-hidden="true">{Math.round(object.elevationDegrees)}°</div>
+                    <div className="object-main"><strong>{object.objectName}</strong><span>NORAD {object.noradId} · {Math.round(object.rangeKm).toLocaleString()} km</span></div>
+                    <div className="object-direction"><strong>{object.azimuthCompass}</strong><span>{Math.round(object.azimuthDegrees)}° · {object.motion}</span></div>
+                  </button>
+                  {expandedNoradId === object.noradId && (
+                    <DossierPanel
+                      state={dossiers[object.noradId]}
+                      object={catalogObject(object.noradId)}
+                      onRetry={() => void loadDossier(object.noradId, true)}
+                    />
+                  )}
                 </li>
               ))}
             </ol>
@@ -191,5 +260,39 @@ export function SkyApp() {
       )}
       <p className="privacy-note">Your coordinates stay in this browser. Orbital calculations run on your device.</p>
     </main>
+  );
+}
+
+function DossierPanel({ state, object, onRetry }: {
+  state: DossierState | undefined;
+  object: CatalogObject | undefined;
+  onRetry: () => void;
+}) {
+  if (!state || state.status === "loading") {
+    return <div className="dossier dossier-loading" role="status">Asking Vertex AI for a grounded brief…</div>;
+  }
+  if (state.status === "error") {
+    return (
+      <div className="dossier dossier-error" role="alert">
+        <strong>Catalog facts only</strong>
+        <p>{object?.metadata?.objectType ?? "Unknown type"} · {object?.metadata?.owner ?? "Owner unknown"} · launched {object?.metadata?.launchDate ?? "date unknown"}</p>
+        <span>{state.message}</span>
+        <button type="button" onClick={onRetry}>Retry brief</button>
+      </div>
+    );
+  }
+  const { data } = state;
+  return (
+    <div className="dossier">
+      <div className="dossier-heading"><span>VERTEX DOSSIER</span><span className={`confidence ${data.confidence}`}>{data.confidence} confidence</span></div>
+      <strong>{data.whatItIs}</strong>
+      {(data.operator || data.purpose) && (
+        <dl>
+          {data.operator && <><dt>Operator</dt><dd>{data.operator}</dd></>}
+          {data.purpose && <><dt>Purpose</dt><dd>{data.purpose}</dd></>}
+        </dl>
+      )}
+      <p>{data.story}</p>
+    </div>
   );
 }
