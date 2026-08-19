@@ -32,7 +32,7 @@ When a user opens a dossier:
 
 1. The browser sends only the object's NORAD ID.
 2. The server finds the authoritative object in its validated CelesTrak catalog.
-3. Catalog fields—object type, owner, launch date, orbit, and radar cross-section class—ground the prompt.
+3. Catalog fields such as object type, owner, launch date, orbit, and radar cross-section class ground the prompt.
 4. `gemini-3.1-flash-lite` returns a structured brief containing `whatItIs`, `operator`, `purpose`, `story`, and `confidence`.
 5. Zod validates the response before it reaches the interface.
 6. Successful dossiers are cached in memory and in the browser.
@@ -85,7 +85,7 @@ Contiguous samples are grouped into passes, and events shorter than 60 seconds a
 ## Privacy and cost controls
 
 - Precise coordinates remain in the browser and are never sent to Cloud Run or Vertex AI.
-- Device location is a single high-accuracy request made only after a user action—there is no watching or polling.
+- Device location is a single high-accuracy request made only after a user action; there is no watching or polling.
 - The city picker is a static local dataset, so it creates no Maps Platform requests.
 - The dossier route accepts only a NORAD ID; clients cannot supply model-grounding metadata.
 - Vertex AI is called only when a dossier is opened and uses minimal thinking with structured output.
