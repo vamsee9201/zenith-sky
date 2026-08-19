@@ -3,6 +3,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { objectsOverhead } from "@/lib/orbit";
 import { dossierSchema } from "@/lib/dossier-schema";
+import {
+  FEATURED_CITIES,
+  OTHER_US_CITIES,
+  findUsCity,
+  formatCityName,
+} from "@/lib/us-cities";
 import { SkyDome } from "@/components/sky-dome";
 import type {
   CatalogObject,
@@ -17,14 +23,23 @@ import type {
 const LOS_ANGELES: Observer = { latitude: 34.0522, longitude: -118.2437 };
 const LOCATION_STORAGE_KEY = "zenith-observer-v1";
 type Tab = "overhead" | "tonight";
-type LocationSource = "fallback" | "device" | "manual";
-interface SavedLocation {
+type LocationSource = "fallback" | "device" | "manual" | "city";
+interface SavedLocationV2 {
   version: 2;
+  observer: Observer;
+  source: "device" | "manual";
+  accuracyMeters: number | null;
+  capturedAt: string;
+}
+interface SavedLocationV3 {
+  version: 3;
   observer: Observer;
   source: Exclude<LocationSource, "fallback">;
   accuracyMeters: number | null;
   capturedAt: string;
+  cityId?: string;
 }
+type SavedLocation = SavedLocationV2 | SavedLocationV3;
 type DossierState =
   | { status: "loading" }
   | { status: "ready"; data: Dossier }
@@ -46,6 +61,44 @@ function validObserver(value: unknown): value is Observer {
   const candidate = value as Partial<Observer>;
   return Number.isFinite(candidate.latitude) && candidate.latitude! >= -90 && candidate.latitude! <= 90 &&
     Number.isFinite(candidate.longitude) && candidate.longitude! >= -180 && candidate.longitude! <= 180;
+}
+
+function parseSavedLocation(value: unknown): SavedLocation | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as {
+    version?: unknown;
+    observer?: unknown;
+    source?: unknown;
+    accuracyMeters?: unknown;
+    capturedAt?: unknown;
+    cityId?: unknown;
+  };
+  const hasValidAccuracy = candidate.accuracyMeters === null ||
+    (typeof candidate.accuracyMeters === "number" && Number.isFinite(candidate.accuracyMeters) && candidate.accuracyMeters >= 0);
+  if (!validObserver(candidate.observer) || !hasValidAccuracy || typeof candidate.capturedAt !== "string") {
+    return null;
+  }
+  if (candidate.version === 2 && (candidate.source === "device" || candidate.source === "manual")) {
+    return {
+      version: 2,
+      observer: candidate.observer,
+      source: candidate.source,
+      accuracyMeters: candidate.accuracyMeters as number | null,
+      capturedAt: candidate.capturedAt,
+    };
+  }
+  if (candidate.version === 3 &&
+      (candidate.source === "device" || candidate.source === "manual" || candidate.source === "city")) {
+    return {
+      version: 3,
+      observer: candidate.observer,
+      source: candidate.source,
+      accuracyMeters: candidate.accuracyMeters as number | null,
+      capturedAt: candidate.capturedAt,
+      ...(typeof candidate.cityId === "string" ? { cityId: candidate.cityId } : {}),
+    };
+  }
+  return null;
 }
 
 function formatAccuracy(accuracyMeters: number) {
@@ -73,6 +126,7 @@ export function SkyApp() {
   const [locationSource, setLocationSource] = useState<LocationSource>("fallback");
   const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [locationMessage, setLocationMessage] = useState<string | null>(null);
+  const [selectedCityId, setSelectedCityId] = useState("");
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [activeTab, setActiveTab] = useState<Tab>("overhead");
@@ -86,22 +140,25 @@ export function SkyApp() {
     let hydrationTimer: number | undefined;
     try {
       const parsed = JSON.parse(stored) as unknown;
-      const candidate = parsed && typeof parsed === "object" ? parsed as Partial<SavedLocation> : null;
-      const saved = candidate?.version === 2 && validObserver(candidate.observer) &&
-        (candidate.source === "device" || candidate.source === "manual") &&
-        (candidate.accuracyMeters === null || (Number.isFinite(candidate.accuracyMeters) && candidate.accuracyMeters! >= 0)) &&
-        typeof candidate.capturedAt === "string"
-        ? candidate as SavedLocation
-        : null;
+      const saved = parseSavedLocation(parsed);
       const restoredObserver = saved?.observer ?? parsed;
       if (validObserver(restoredObserver)) {
+        const savedCity = saved?.version === 3 && saved.source === "city"
+          ? findUsCity(saved.cityId)
+          : undefined;
+        const restoredSource = saved?.source === "city" && !savedCity
+          ? "manual"
+          : saved?.source ?? "manual";
         hydrationTimer = window.setTimeout(() => {
           setObserver(restoredObserver);
           setLatitudeInput(String(restoredObserver.latitude));
           setLongitudeInput(String(restoredObserver.longitude));
-          setLocationSource(saved?.source ?? "manual");
-          setLocationAccuracy(saved?.accuracyMeters ?? null);
-          setLocationLabel(saved?.source === "device" ? "Saved device location" : "Saved location");
+          setSelectedCityId(savedCity?.id ?? "");
+          setLocationSource(restoredSource);
+          setLocationAccuracy(restoredSource === "device" ? saved?.accuracyMeters ?? null : null);
+          setLocationLabel(savedCity
+            ? `${formatCityName(savedCity)} city center`
+            : restoredSource === "device" ? "Saved device location" : "Saved location");
         }, 0);
       }
     } catch {
@@ -179,8 +236,8 @@ export function SkyApp() {
         const accuracyMeters = Number.isFinite(position.coords.accuracy)
           ? Math.max(0, Math.round(position.coords.accuracy))
           : null;
-        const saved: SavedLocation = {
-          version: 2,
+        const saved: SavedLocationV3 = {
+          version: 3,
           observer: next,
           source: "device",
           accuracyMeters,
@@ -189,6 +246,7 @@ export function SkyApp() {
         setObserver(next);
         setLatitudeInput(String(next.latitude));
         setLongitudeInput(String(next.longitude));
+        setSelectedCityId("");
         setLocationLabel("Current location");
         setLocationSource("device");
         setLocationAccuracy(accuracyMeters);
@@ -223,19 +281,41 @@ export function SkyApp() {
       return;
     }
     const next = { latitude, longitude };
-    const saved: SavedLocation = {
-      version: 2,
+    const selectedCity = findUsCity(selectedCityId);
+    const cityMatchesInputs = selectedCity?.latitude === latitude && selectedCity.longitude === longitude;
+    const saved: SavedLocationV3 = {
+      version: 3,
       observer: next,
-      source: "manual",
+      source: cityMatchesInputs ? "city" : "manual",
       accuracyMeters: null,
       capturedAt: new Date().toISOString(),
+      ...(cityMatchesInputs ? { cityId: selectedCity.id } : {}),
     };
     setObserver(next);
     window.localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(saved));
-    setLocationSource("manual");
+    setLocationSource(saved.source);
     setLocationAccuracy(null);
-    setLocationLabel("Saved manual location");
-    setLocationMessage("Manual location saved on this device.");
+    setLocationLabel(cityMatchesInputs
+      ? `${formatCityName(selectedCity)} city center`
+      : "Saved manual location");
+    setLocationMessage(cityMatchesInputs
+      ? `${formatCityName(selectedCity)} city center saved on this device.`
+      : "Manual location saved on this device.");
+  }
+
+  function selectCity(cityId: string) {
+    setSelectedCityId(cityId);
+    const city = findUsCity(cityId);
+    if (!city) return;
+    setLatitudeInput(String(city.latitude));
+    setLongitudeInput(String(city.longitude));
+    setLocationMessage(`Coordinates loaded for ${formatCityName(city)}. Select Save to apply.`);
+  }
+
+  function updateCoordinateInput(field: "latitude" | "longitude", value: string) {
+    setSelectedCityId("");
+    if (field === "latitude") setLatitudeInput(value);
+    else setLongitudeInput(value);
   }
 
   function clearSavedLocation() {
@@ -243,6 +323,7 @@ export function SkyApp() {
     setObserver(LOS_ANGELES);
     setLatitudeInput(String(LOS_ANGELES.latitude));
     setLongitudeInput(String(LOS_ANGELES.longitude));
+    setSelectedCityId("");
     setLocationLabel("Los Angeles fallback");
     setLocationSource("fallback");
     setLocationAccuracy(null);
@@ -317,10 +398,26 @@ export function SkyApp() {
           </button>
         </div>
         <details className="manual-location">
-          <summary>Enter coordinates</summary>
+          <summary>Choose a city or enter coordinates</summary>
           <form onSubmit={saveManualLocation}>
-            <label>Latitude<input inputMode="decimal" value={latitudeInput} onChange={(event) => setLatitudeInput(event.target.value)} /></label>
-            <label>Longitude<input inputMode="decimal" value={longitudeInput} onChange={(event) => setLongitudeInput(event.target.value)} /></label>
+            <label className="city-picker">U.S. city
+              <select
+                value={selectedCityId}
+                aria-describedby="city-coordinate-note"
+                onChange={(event) => selectCity(event.target.value)}
+              >
+                <option value="">Choose a city…</option>
+                <optgroup label="Featured cities">
+                  {FEATURED_CITIES.map((city) => <option key={city.id} value={city.id}>{formatCityName(city)}</option>)}
+                </optgroup>
+                <optgroup label="More large U.S. cities">
+                  {OTHER_US_CITIES.map((city) => <option key={city.id} value={city.id}>{formatCityName(city)}</option>)}
+                </optgroup>
+              </select>
+            </label>
+            <p className="city-coordinate-note" id="city-coordinate-note">City choices use approximate city-center coordinates. Use my location for precise coordinates.</p>
+            <label>Latitude<input inputMode="decimal" value={latitudeInput} onChange={(event) => updateCoordinateInput("latitude", event.target.value)} /></label>
+            <label>Longitude<input inputMode="decimal" value={longitudeInput} onChange={(event) => updateCoordinateInput("longitude", event.target.value)} /></label>
             <button type="submit">Save</button>
           </form>
           {locationSource !== "fallback" && <button className="clear-location" type="button" onClick={clearSavedLocation}>Clear saved location</button>}

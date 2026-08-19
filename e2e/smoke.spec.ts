@@ -24,9 +24,30 @@ test("uses and remembers a granted browser location", async ({ page, context }) 
   await expect(page.getByText("Current location")).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh location" })).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("zenith-observer-v1") ?? "null"))).toMatchObject({
-    version: 2,
+    version: 3,
     observer: { latitude: 32.71574, longitude: -117.16109 },
     source: "device",
+  });
+});
+
+test("stages and saves a static city-center location", async ({ page }) => {
+  await page.route("**/api/catalog", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ updatedAt: new Date().toISOString(), stale: false, objects: [] }),
+  }));
+  await page.goto("/");
+  await page.getByText("Choose a city or enter coordinates").click();
+  await page.getByLabel("U.S. city").selectOption("san-francisco-ca");
+  await expect(page.getByLabel("Latitude")).toHaveValue("37.7749");
+  await expect(page.getByText("Los Angeles fallback")).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("zenith-observer-v1"))).toBeNull();
+
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("San Francisco, CA city center", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("zenith-observer-v1") ?? "null"))).toMatchObject({
+    version: 3,
+    source: "city",
+    cityId: "san-francisco-ca",
   });
 });
 
