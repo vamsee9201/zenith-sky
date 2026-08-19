@@ -54,9 +54,11 @@ describe("SkyApp location controls", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(screen.getByText("Manual location saved on this device.")).toBeVisible();
-    expect(JSON.parse(window.localStorage.getItem("zenith-observer-v1") ?? "null")).toEqual({
-      latitude: 40.7128,
-      longitude: -74.006,
+    expect(JSON.parse(window.localStorage.getItem("zenith-observer-v1") ?? "null")).toMatchObject({
+      version: 2,
+      observer: { latitude: 40.7128, longitude: -74.006 },
+      source: "manual",
+      accuracyMeters: null,
     });
   });
 
@@ -64,7 +66,7 @@ describe("SkyApp location controls", () => {
     Object.defineProperty(navigator, "geolocation", {
       configurable: true,
       value: {
-        getCurrentPosition: (_success: PositionCallback, error: PositionErrorCallback) => error({} as GeolocationPositionError),
+        getCurrentPosition: (_success: PositionCallback, error: PositionErrorCallback) => error({ code: 1 } as GeolocationPositionError),
       },
     });
     const user = userEvent.setup();
@@ -73,6 +75,77 @@ describe("SkyApp location controls", () => {
     await user.click(screen.getByRole("button", { name: "Use my location" }));
     expect(await screen.findByText(/manual coordinates remain active/i)).toBeVisible();
     expect(screen.getByText("Los Angeles fallback")).toBeVisible();
+  });
+
+  it.each([
+    [2, /location was unavailable/i],
+    [3, /precise location timed out/i],
+  ])("explains geolocation error code %s", async (code, message) => {
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: (_success: PositionCallback, error: PositionErrorCallback) => error({ code } as GeolocationPositionError),
+      },
+    });
+    const user = userEvent.setup();
+    render(<SkyApp />);
+    await user.click(screen.getByRole("button", { name: "Use my location" }));
+    expect(await screen.findByText(message)).toBeVisible();
+  });
+
+  it("requests one high-accuracy fix and saves its accuracy", async () => {
+    const getCurrentPosition = vi.fn((...args: Parameters<Geolocation["getCurrentPosition"]>) => {
+      const [success] = args;
+      success({
+        coords: { latitude: 32.71574, longitude: -117.16109, accuracy: 42 },
+        timestamp: Date.parse("2026-08-19T01:00:00Z"),
+      } as GeolocationPosition);
+    });
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition },
+    });
+    const user = userEvent.setup();
+    render(<SkyApp />);
+
+    await user.click(screen.getByRole("button", { name: "Use my location" }));
+    expect(getCurrentPosition).toHaveBeenCalledOnce();
+    expect(getCurrentPosition.mock.calls[0][2]).toEqual({ enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 });
+    expect(screen.getAllByText("Accurate to about 42 m").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Refresh location" })).toBeVisible();
+    expect(JSON.parse(window.localStorage.getItem("zenith-observer-v1") ?? "null")).toEqual({
+      version: 2,
+      observer: { latitude: 32.71574, longitude: -117.16109 },
+      source: "device",
+      accuracyMeters: 42,
+      capturedAt: "2026-08-19T01:00:00.000Z",
+    });
+  });
+
+  it("warns when a device fix is coarse", async () => {
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition: (success: PositionCallback) => success({
+        coords: { latitude: 34, longitude: -118, accuracy: 6_200 },
+        timestamp: Date.now(),
+      } as GeolocationPosition) },
+    });
+    const user = userEvent.setup();
+    render(<SkyApp />);
+    await user.click(screen.getByRole("button", { name: "Use my location" }));
+    expect(screen.getByText(/approximate.*6\.2 km/i)).toBeVisible();
+  });
+
+  it("restores legacy coordinates and clears them back to the example fallback", async () => {
+    window.localStorage.setItem("zenith-observer-v1", JSON.stringify({ latitude: 51.5074, longitude: -0.1278 }));
+    const user = userEvent.setup();
+    render(<SkyApp />);
+
+    expect(await screen.findByText("Saved location")).toBeVisible();
+    await user.click(screen.getByText("Enter coordinates"));
+    await user.click(screen.getByRole("button", { name: "Clear saved location" }));
+    expect(screen.getByText("Los Angeles fallback")).toBeVisible();
+    expect(window.localStorage.getItem("zenith-observer-v1")).toBeNull();
   });
 
   it("requests and stores a server-grounded dossier by NORAD ID", async () => {

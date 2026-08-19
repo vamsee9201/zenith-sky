@@ -12,6 +12,24 @@ test("renders the phone-first sky interface and denied-location fallback", async
   await expect(page.getByRole("img", { name: /North-up sky dome/ })).toBeVisible();
 });
 
+test("uses and remembers a granted browser location", async ({ page, context }) => {
+  await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3100" });
+  await context.setGeolocation({ latitude: 32.71574, longitude: -117.16109 });
+  await page.route("**/api/catalog", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ updatedAt: new Date().toISOString(), stale: false, objects: [] }),
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Use my location" }).click();
+  await expect(page.getByText("Current location")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh location" })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("zenith-observer-v1") ?? "null"))).toMatchObject({
+    version: 2,
+    observer: { latitude: 32.71574, longitude: -117.16109 },
+    source: "device",
+  });
+});
+
 test("publishes a standalone web app manifest", async ({ request }) => {
   const response = await request.get("/manifest.webmanifest");
   expect(response.ok()).toBeTruthy();

@@ -17,6 +17,14 @@ import type {
 const LOS_ANGELES: Observer = { latitude: 34.0522, longitude: -118.2437 };
 const LOCATION_STORAGE_KEY = "zenith-observer-v1";
 type Tab = "overhead" | "tonight";
+type LocationSource = "fallback" | "device" | "manual";
+interface SavedLocation {
+  version: 2;
+  observer: Observer;
+  source: Exclude<LocationSource, "fallback">;
+  accuracyMeters: number | null;
+  capturedAt: string;
+}
 type DossierState =
   | { status: "loading" }
   | { status: "ready"; data: Dossier }
@@ -33,6 +41,28 @@ function formatUpdatedAt(value: string | null) {
   }).format(new Date(value))}`;
 }
 
+function validObserver(value: unknown): value is Observer {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<Observer>;
+  return Number.isFinite(candidate.latitude) && candidate.latitude! >= -90 && candidate.latitude! <= 90 &&
+    Number.isFinite(candidate.longitude) && candidate.longitude! >= -180 && candidate.longitude! <= 180;
+}
+
+function formatAccuracy(accuracyMeters: number) {
+  if (accuracyMeters < 1_000) return `${Math.round(accuracyMeters)} m`;
+  return `${(accuracyMeters / 1_000).toFixed(accuracyMeters < 10_000 ? 1 : 0)} km`;
+}
+
+function locationErrorMessage(error: GeolocationPositionError) {
+  if (error.code === error.PERMISSION_DENIED || error.code === 1) {
+    return "Location permission was denied. The manual coordinates remain active.";
+  }
+  if (error.code === error.TIMEOUT || error.code === 3) {
+    return "Precise location timed out. Retry or enter coordinates manually.";
+  }
+  return "Location was unavailable. The manual coordinates remain active.";
+}
+
 export function SkyApp() {
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -40,6 +70,8 @@ export function SkyApp() {
   const [latitudeInput, setLatitudeInput] = useState(String(LOS_ANGELES.latitude));
   const [longitudeInput, setLongitudeInput] = useState(String(LOS_ANGELES.longitude));
   const [locationLabel, setLocationLabel] = useState("Los Angeles fallback");
+  const [locationSource, setLocationSource] = useState<LocationSource>("fallback");
+  const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
   const [locationMessage, setLocationMessage] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(() => new Date());
@@ -53,16 +85,23 @@ export function SkyApp() {
     if (!stored) return;
     let hydrationTimer: number | undefined;
     try {
-      const parsed = JSON.parse(stored) as Observer;
-      if (
-        Number.isFinite(parsed.latitude) && parsed.latitude >= -90 && parsed.latitude <= 90 &&
-        Number.isFinite(parsed.longitude) && parsed.longitude >= -180 && parsed.longitude <= 180
-      ) {
+      const parsed = JSON.parse(stored) as unknown;
+      const candidate = parsed && typeof parsed === "object" ? parsed as Partial<SavedLocation> : null;
+      const saved = candidate?.version === 2 && validObserver(candidate.observer) &&
+        (candidate.source === "device" || candidate.source === "manual") &&
+        (candidate.accuracyMeters === null || (Number.isFinite(candidate.accuracyMeters) && candidate.accuracyMeters! >= 0)) &&
+        typeof candidate.capturedAt === "string"
+        ? candidate as SavedLocation
+        : null;
+      const restoredObserver = saved?.observer ?? parsed;
+      if (validObserver(restoredObserver)) {
         hydrationTimer = window.setTimeout(() => {
-          setObserver(parsed);
-          setLatitudeInput(String(parsed.latitude));
-          setLongitudeInput(String(parsed.longitude));
-          setLocationLabel("Saved location");
+          setObserver(restoredObserver);
+          setLatitudeInput(String(restoredObserver.latitude));
+          setLongitudeInput(String(restoredObserver.longitude));
+          setLocationSource(saved?.source ?? "manual");
+          setLocationAccuracy(saved?.accuracyMeters ?? null);
+          setLocationLabel(saved?.source === "device" ? "Saved device location" : "Saved location");
         }, 0);
       }
     } catch {
@@ -137,18 +176,37 @@ export function SkyApp() {
           latitude: Number(position.coords.latitude.toFixed(5)),
           longitude: Number(position.coords.longitude.toFixed(5)),
         };
+        const accuracyMeters = Number.isFinite(position.coords.accuracy)
+          ? Math.max(0, Math.round(position.coords.accuracy))
+          : null;
+        const saved: SavedLocation = {
+          version: 2,
+          observer: next,
+          source: "device",
+          accuracyMeters,
+          capturedAt: new Date(Number.isFinite(position.timestamp) ? position.timestamp : Date.now()).toISOString(),
+        };
         setObserver(next);
         setLatitudeInput(String(next.latitude));
         setLongitudeInput(String(next.longitude));
         setLocationLabel("Current location");
-        setLocationMessage("Location updated. It stays on this device.");
+        setLocationSource("device");
+        setLocationAccuracy(accuracyMeters);
+        window.localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(saved));
+        if (accuracyMeters !== null && accuracyMeters > 5_000) {
+          setLocationMessage(`Location is approximate (accurate to about ${formatAccuracy(accuracyMeters)}). Retry outdoors or enter coordinates.`);
+        } else {
+          setLocationMessage(accuracyMeters === null
+            ? "Location updated and saved on this device."
+            : `Location updated. Accurate to about ${formatAccuracy(accuracyMeters)}.`);
+        }
         setLocating(false);
       },
-      () => {
-        setLocationMessage("Location was unavailable. The manual coordinates remain active.");
+      (error) => {
+        setLocationMessage(locationErrorMessage(error));
         setLocating(false);
       },
-      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 10 * 60 * 1000 },
+      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 },
     );
   }
 
@@ -165,10 +223,30 @@ export function SkyApp() {
       return;
     }
     const next = { latitude, longitude };
+    const saved: SavedLocation = {
+      version: 2,
+      observer: next,
+      source: "manual",
+      accuracyMeters: null,
+      capturedAt: new Date().toISOString(),
+    };
     setObserver(next);
-    window.localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(next));
-    setLocationLabel("Saved location");
+    window.localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(saved));
+    setLocationSource("manual");
+    setLocationAccuracy(null);
+    setLocationLabel("Saved manual location");
     setLocationMessage("Manual location saved on this device.");
+  }
+
+  function clearSavedLocation() {
+    window.localStorage.removeItem(LOCATION_STORAGE_KEY);
+    setObserver(LOS_ANGELES);
+    setLatitudeInput(String(LOS_ANGELES.latitude));
+    setLongitudeInput(String(LOS_ANGELES.longitude));
+    setLocationLabel("Los Angeles fallback");
+    setLocationSource("fallback");
+    setLocationAccuracy(null);
+    setLocationMessage("Saved location cleared. Using the Los Angeles example fallback.");
   }
 
   async function loadDossier(noradId: string, force = false) {
@@ -232,9 +310,10 @@ export function SkyApp() {
             <p className="section-kicker" id="location-heading">OBSERVER</p>
             <strong>{locationLabel}</strong>
             <span>{observer.latitude.toFixed(4)}°, {observer.longitude.toFixed(4)}°</span>
+            {locationAccuracy !== null && <span className="location-accuracy">Accurate to about {formatAccuracy(locationAccuracy)}</span>}
           </div>
           <button className="locate-button" type="button" onClick={useCurrentLocation} disabled={locating}>
-            {locating ? "Locating…" : "Use my location"}
+            {locating ? "Locating…" : locationSource === "device" ? "Refresh location" : "Use my location"}
           </button>
         </div>
         <details className="manual-location">
@@ -244,6 +323,7 @@ export function SkyApp() {
             <label>Longitude<input inputMode="decimal" value={longitudeInput} onChange={(event) => setLongitudeInput(event.target.value)} /></label>
             <button type="submit">Save</button>
           </form>
+          {locationSource !== "fallback" && <button className="clear-location" type="button" onClick={clearSavedLocation}>Clear saved location</button>}
         </details>
         {locationMessage && <p className="inline-message" role="status">{locationMessage}</p>}
       </section>
