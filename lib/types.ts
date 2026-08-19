@@ -79,7 +79,20 @@ export interface VisiblePass {
   endAzimuthDegrees: number;
   endAzimuthCompass: string;
   peakElevationDegrees: number;
+  track: Array<{ azimuthDegrees: number; elevationDegrees: number }>;
 }
+
+export interface PassWorkerRequest {
+  type: "predict";
+  requestId: string;
+  objects: CatalogObject[];
+  observer: Observer;
+  calculationTime: string;
+}
+
+export type PassWorkerResponse =
+  | { type: "result"; requestId: string; passes: VisiblePass[] }
+  | { type: "error"; requestId: string; message: string };
 
 export interface Dossier {
   whatItIs: string;
@@ -95,4 +108,3 @@ export interface ApiError {
     message: string;
   };
 }
-

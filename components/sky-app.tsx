@@ -3,7 +3,15 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { objectsOverhead } from "@/lib/orbit";
 import { dossierSchema } from "@/lib/dossier-schema";
-import type { CatalogObject, CatalogResponse, Dossier, Observer } from "@/lib/types";
+import type {
+  CatalogObject,
+  CatalogResponse,
+  Dossier,
+  Observer,
+  PassWorkerRequest,
+  PassWorkerResponse,
+  VisiblePass,
+} from "@/lib/types";
 
 const LOS_ANGELES: Observer = { latitude: 34.0522, longitude: -118.2437 };
 const LOCATION_STORAGE_KEY = "zenith-observer-v1";
@@ -11,6 +19,10 @@ type Tab = "overhead" | "tonight";
 type DossierState =
   | { status: "loading" }
   | { status: "ready"; data: Dossier }
+  | { status: "error"; message: string };
+type PassState =
+  | { status: "idle" | "loading" }
+  | { status: "ready"; passes: VisiblePass[] }
   | { status: "error"; message: string };
 
 function formatUpdatedAt(value: string | null) {
@@ -33,6 +45,7 @@ export function SkyApp() {
   const [activeTab, setActiveTab] = useState<Tab>("overhead");
   const [expandedNoradId, setExpandedNoradId] = useState<string | null>(null);
   const [dossiers, setDossiers] = useState<Record<string, DossierState>>({});
+  const [passState, setPassState] = useState<PassState>({ status: "idle" });
 
   useEffect(() => {
     const stored = window.localStorage.getItem(LOCATION_STORAGE_KEY);
@@ -82,6 +95,28 @@ export function SkyApp() {
     const interval = window.setInterval(() => setNow(new Date()), 5_000);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "tonight" || !catalog) return;
+    const worker = new Worker(new URL("../workers/visible-passes.worker.ts", import.meta.url));
+    const requestId = `${Date.now()}-${Math.random()}`;
+    setPassState({ status: "loading" });
+    worker.onmessage = (event: MessageEvent<PassWorkerResponse>) => {
+      if (event.data.requestId !== requestId) return;
+      if (event.data.type === "result") setPassState({ status: "ready", passes: event.data.passes });
+      else setPassState({ status: "error", message: event.data.message });
+    };
+    worker.onerror = () => setPassState({ status: "error", message: "The pass calculator could not start." });
+    const request: PassWorkerRequest = {
+      type: "predict",
+      requestId,
+      objects: catalog.objects,
+      observer,
+      calculationTime: new Date().toISOString(),
+    };
+    worker.postMessage(request);
+    return () => worker.terminate();
+  }, [activeTab, catalog, observer]);
 
   const overhead = useMemo(
     () => (catalog ? objectsOverhead(catalog.objects, observer, now) : []),
@@ -214,7 +249,7 @@ export function SkyApp() {
 
       <nav className="view-tabs" aria-label="Sky views">
         <button type="button" className={activeTab === "overhead" ? "active" : ""} aria-pressed={activeTab === "overhead"} onClick={() => setActiveTab("overhead")}>Overhead <span>{catalog ? overhead.length : "—"}</span></button>
-        <button type="button" className={activeTab === "tonight" ? "active" : ""} aria-pressed={activeTab === "tonight"} onClick={() => setActiveTab("tonight")}>Tonight</button>
+        <button type="button" className={activeTab === "tonight" ? "active" : ""} aria-pressed={activeTab === "tonight"} onClick={() => setActiveTab("tonight")}>Tonight {passState.status === "ready" && <span>{passState.passes.length}</span>}</button>
       </nav>
 
       {activeTab === "overhead" ? (
@@ -254,12 +289,36 @@ export function SkyApp() {
           <footer className="catalog-note"><span className={catalog?.stale ? "status-dot stale" : "status-dot"} />{formatUpdatedAt(catalog?.updatedAt ?? null)}{catalog?.stale ? " · saved snapshot" : " · current"}</footer>
         </section>
       ) : (
-        <section className="sky-panel tonight-placeholder" aria-labelledby="tonight-heading">
-          <p className="section-kicker">NEXT 24 HOURS</p><h2 id="tonight-heading">Visible passes are coming next.</h2><p>We&apos;ll filter for darkness, elevation, and sunlight—being overhead alone is not enough.</p>
+        <section className="sky-panel" aria-labelledby="tonight-heading">
+          <div className="panel-heading">
+            <div><p className="section-kicker">NEXT 24 HOURS</p><h2 id="tonight-heading">Visible bright-catalog passes</h2></div>
+          </div>
+          {(passState.status === "idle" || passState.status === "loading") && (
+            <div className="pass-loading" role="status"><span /><strong>Calculating on your device…</strong><p>Checking darkness, elevation, and Earth shadow for every bright-catalog object.</p></div>
+          )}
+          {passState.status === "error" && <div className="empty-state error-state" role="alert"><strong>Pass calculation failed</strong><p>{passState.message}</p></div>}
+          {passState.status === "ready" && passState.passes.length === 0 && <div className="empty-state"><strong>No qualifying pass in the next 24 hours.</strong><p>Try a different observer location or check again after the catalog refreshes.</p></div>}
+          {passState.status === "ready" && passState.passes.length > 0 && <PassList passes={passState.passes} />}
+          <footer className="pass-note">These objects belong to the bright visual catalog. Actual brightness varies with distance, attitude, atmosphere, and surroundings.</footer>
         </section>
       )}
       <p className="privacy-note">Your coordinates stay in this browser. Orbital calculations run on your device.</p>
     </main>
+  );
+}
+
+function PassList({ passes }: { passes: VisiblePass[] }) {
+  const time = (value: string) => new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+  return (
+    <ol className="pass-list">
+      {passes.map((pass) => (
+        <li key={`${pass.noradId}-${pass.startTime}`}>
+          <div className="pass-time"><strong>{time(pass.startTime)}</strong><span>{Math.round(pass.durationSeconds / 60)} min</span></div>
+          <div className="pass-main"><strong>{pass.objectName}</strong><span>NORAD {pass.noradId} · peaks {Math.round(pass.peakElevationDegrees)}°</span></div>
+          <div className="pass-direction"><strong>{pass.startAzimuthCompass} → {pass.endAzimuthCompass}</strong><span>appears → fades</span></div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
